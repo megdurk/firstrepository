@@ -1,0 +1,560 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-11-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(tidyverse) 
+library(sjPlot) 
+library(tinytex) 
+library(kableExtra)
+library(car) 
+library(knitr) 
+library(ggplot2) 
+library(emmeans) 
+library(lme4) 
+library(effects)
+library(broom.mixed)
+library(tidyr)
+library(pbkrtest)
+library(patchwork)
+library(ICC)
+library(glmmTMB)
+library(HLMdiag)
+library(lmeresampler)
+library(psych)
+library(bookdown)
+library(tibble) #loading possibly relevant packages
+```
+
+
+```{r include=FALSE}
+bmidata<- read.csv('~/Downloads/BMIbrainAge.csv')
+demodata<- read.csv('~/Downloads/Demographics.csv')
+
+#need to merge the demographic data into it as well, first delete repeated RIDs' 
+
+#make sure 
+demodata <- demodata[!duplicated(demodata$RID),] 
+ 
+#then merge them 
+
+merged<- merge(demodata,bmidata, by = "RID", all.y = TRUE)
+
+#download the merged set onto csv then delete what i dont want in xl then re upload, easiest way to delete columns 
+  
+# Select RIDs with non-NA and non-9999 values in the cog beginning date column
+selected_ridscog <- merged$RID[!is.na(merged$PTCOGBEG) & merged$PTCOGBEG != 9999]
+
+# Print or use the selected RIDs as needed
+print(selected_ridscog)
+
+# Select RIDs with non-NA and non-9999 values in the mci beginning date column
+selected_ridsmci <- merged$RID[!is.na(merged$PTMCIBEG) & merged$PTMCIBEG != 9999]
+
+# Print or use the selected RIDs as needed
+print(selected_ridsmci)
+
+#  list of RIDs to remove
+remove_rids <- c("4051", "4061", "4187", "4199", "4499", "4512", "4785","5207", "2315","2379")
+
+# Remove participants with specified RIDs
+mergedslim <- subset(merged, !(RID %in% remove_rids))
+
+
+#download the data set to refine it in excel 
+write.csv(mergedslim, file = "mergedslim.csv")
+
+#changing from pounds to kilograms 1 = pounds
+
+library(tidyverse)
+merged_redu<- read.csv('~/Downloads/mergedslimref.csv')
+
+merged_red1 <- merged_redu %>%
+  mutate(
+    WEIGHT = ifelse(WTUNIT == "1", round(WEIGHT * 0.45359237, 2), WEIGHT)
+  )
+
+#convert all heights to cm 
+merged_red2<- merged_red1%>%
+  mutate(
+  HEIGHT = ifelse(HTUNIT == "1", round(HEIGHT*2.54,2), HEIGHT)
+)
+
+  #calculating BMI 
+
+merged_red2<- merged_red2%>%
+  mutate(
+    HEIGHT_M2 = (HEIGHT/100)^2,
+    BMI = round(WEIGHT/HEIGHT_M2,2)
+  )
+
+#remove 4376 no height data 
+merged_red2<- subset(merged_red2, RID != 4376)
+
+# Define the BMI ranges and corresponding labels
+bmi_breaks <- c(-Inf, 18.5, 25, 30, Inf)
+bmi_labels <- c("Underweight", "Healthy", "Overweight", "Obese")
+
+# Create a new categorical variable based on BMI ranges
+merged_red2$BMI_Group <- cut(merged_red2$BMI, breaks = bmi_breaks, labels = bmi_labels, include.lowest = TRUE)
+
+
+#the data set i am now using is the merged_red2 dataset. It is complete now i will download it to compare to the data set before the height and weight were changed. 
+
+#write the finalised data set before running the analysis and compare it to the old one to check it works
+write.csv(merged_red2, file = "finaldataset2.csv")
+
+finaldata<- merged_red2
+
+#check BMI group is a factor 
+is.factor(finaldata$BMI_Group)
+
+# Use relevel to set "healthy" as the reference level
+finaldata$BMI_Group <- relevel(finaldata$BMI_Group, ref = "Healthy")
+
+finaldata<- subset(finaldata, BMI_Group != "Underweight")
+
+regressiondata2 <- finaldata%>%
+  select(- c("RESP","X", "PTCOGBEG","PTMCIBEG", "RESP","TEMP","TMPSRC"))
+
+which(is.na(regressiondata2), arr.ind = TRUE)
+#RID = 4485 remove from data set
+
+regressiondata3<- subset(regressiondata2, RID != 4485)
+
+#remove underweight we only have 3 participants 
+levels(regressiondata3$BMI_Group)
+
+# Remove level underweight 
+regressiondata3$BMI_Group <- droplevels(regressiondata3$BMI_Group, exclude = "Underweight")
+
+levels(regressiondata3$BMI_Group)
+
+##check coding of factors and plausability of ranges
+class(regressiondata3$SEX)
+class(regressiondata3$PULSE)
+class(regressiondata3$BPSYS)
+class(regressiondata3$BPDIA)
+class(regressiondata3$brainDelta)
+class(regressiondata3$BMI_Group)
+
+
+filter(regressiondata3, SEX > 2) 
+filter(regressiondata3, SEX < 1) #no weird values
+
+
+filter(regressiondata3, PULSE >100)
+filter(regressiondata3, PULSE <60)
+
+#there were a lot of ppt with low hr and one with faster HR, these conditions are common in the elderly and excluding them would not make sense, but it is something to note. these are the cut offs for brady and tachycardia 
+
+range(regressiondata3$BPSYS)
+range(regressiondata3$BPDIA)
+
+#there is a wide range of blood pressures here with people showing extreme values with it being a significant predictor maybe run an extra analysis to see if there is an interaction between BMI and BP. 
+
+#make a pulse pressure variable
+
+regressiondata3<- regressiondata3%>%
+  mutate(
+    PULSEPRESS = BPSYS - BPDIA
+  )
+
+#make sex and racial category into a factor and rename the levels 
+regressiondata3$SEX<- as.factor(regressiondata3$SEX)
+regressiondata3$RACIAL_CAT<- as.factor(regressiondata3$RACIAL_CAT)
+
+class(regressiondata3$SEX)
+class(regressiondata3$RACIAL_CAT)
+
+#rename the sex and racial categories
+levels(regressiondata3$RACIAL_CAT) <- c("American Indian or Alaskan Native", "Asian", "Native Hawaiian or Other Pacific Islander", "Black or African American","White","More than one race","Unknown")
+levels(regressiondata3$SEX)<- c("Male", "Female")
+
+levels(regressiondata3$RACIAL_CAT)
+levels(regressiondata3$SEX)
+
+```
+
+
+
+
+```{r exploring data, include=TRUE}
+#Descriptive statistics 
+
+desc_statistics <- regressiondata3 %>%
+  group_by(BMI_Group) %>%
+  summarise(
+    "Average Brain Delta Score" = round(mean(brainDelta, na.rm = TRUE), 2),
+    "SD of Brain Delta Score" = round(sd(brainDelta), 2), 
+    "Lowest Scores on Brain Delta" = round(min(brainDelta),2),
+   "Highest Scores on Brain Delta" = round(max(brainDelta),2),
+   "Range of Brain Delta Scores" = round(max(brainDelta) - min(brainDelta),2),
+   "pulse age avg" = round(mean(PULSEPRESS, na.rm = TRUE), 2),
+   "pulse age Sd" = round(sd(PULSEPRESS), 2), 
+   "Lowest Scores on pulse age" = round(min(PULSEPRESS),2),
+   "Highest Scores on pulse age" = round(max(PULSEPRESS),2),
+   "chron age avg" = round(mean(Age, na.rm = TRUE), 2),
+   "chron age Sd" = round(sd(Age), 2), 
+   "Lowest Scores on chron age" = round(min(Age),2),
+   "Highest Scores on chron age" = round(max(Age),2),
+  )
+
+
+#descriptive graphs of bmi group and brain age delta score and blood pressure and brain age 
+
+bdplot<- ggplot( data = regressiondata3, aes(x= BMI_Group, y = brainDelta, fill = BMI_Group))+
+  geom_boxplot(alpha=0.3)+
+  labs(x = "BMI Group", y = "BrainAGE Score")+
+    scale_color_manual(values = c("cyan", "lightgreen", "lavender"))+
+                         theme(
+    text = element_text(family = "Times New Roman", size = 12))
+
+plotBPD<- ggplot(data = regressiondata3, aes(x = BPDIA, y = brainDelta, col = BMI_Group))+
+  geom_point()+
+  geom_smooth(method = "lm", se = FALSE)+
+  labs(x = "Diastolic Blood Pressure", y = "Brain Delta Score", col = "BMI Group")+
+  scale_color_manual(values = c("red", "blue", "orange"))
+
+plotBPs<- ggplot(data = regressiondata3, aes(x = BPSYS, y = brainDelta, col = BMI_Group))+
+  geom_point()+
+  geom_smooth(method = "lm", se = FALSE)+
+  labs(x = "Systolic Blood Pressure", y = "Brain Delta Score", col = "BMI Group")+
+    scale_color_manual(values = c("red", "blue", "orange"))
+
+
+#BMI group bp interaction boxplots - not sure if needed but graphed
+
+plotbmibpd<- ggplot(data = regressiondata3, aes(x = BMI_Group, y = BPDIA))+
+  geom_boxplot()+
+  geom_smooth(method = "lm", se = FALSE)+
+  labs(x = "Diastolic Blood Pressure", y = "Brain Delta Score", col = "BMI Group")
+
+plotbmibps<- ggplot(data = regressiondata3, aes(x = BMI_Group, y = BPSYS))+
+  geom_boxplot()+
+  geom_smooth(method = "lm", se = FALSE)+
+  labs(x = "Systolic Blood Pressure", y = "Brain Delta Score", col = "BMI Group")
+
+library(finalfit)
+explanatory <- c("Age", "SEX", 
+                "BMI", "BPSYS", 
+                "BPDIA","BPSYS","PULSE","HEIGHT","WEIGHT","RACIAL_CAT", "PULSEPRESS")
+
+dempot<- regressiondata3 %>% 
+  summary_factorlist("BMI_Group", explanatory,
+                     p=TRUE, na_include=FALSE,
+                     add_dependent_label=TRUE,
+                     dependent_label_prefix = "demo"
+                     )
+
+regressiondata3 <- regressiondata3 %>% 
+  mutate(
+    Age = ff_label(Age, "Age (years)"),
+    SEX = ff_label(SEX, "Sex (Number of Participants)"),
+    BPSYS = ff_label(BPSYS, "Systolic Blood Pressure (mmHg)"),
+    BPDIA = ff_label(BPDIA, "Diastolic Blood Pressure (mmHg)"),
+    PULSE = ff_label(PULSE, "Pulse Rate (bpm)"),
+    HEIGHT = ff_label(HEIGHT, "Height (cm)"),
+    WEIGHT = ff_label(WEIGHT, "Weight (kg)"),
+    RACIAL_CAT = ff_label(RACIAL_CAT, "Racial Category (Number of Participants"),
+    PULSEPRESS = ff_label(PULSEPRESS, "Pulse Pressure")
+    )
+
+table1 <- regressiondata3 %>%  
+  summary_factorlist("BMI_Group", explanatory, 
+                     p=TRUE, na_include=FALSE, 
+                     add_dependent_label=TRUE,
+                     dependent_label_prefix = "Demographics : "
+                     )
+
+
+bdplot
+```
+```{r}
+
+pulsepressstats<- regressiondata3%>%
+  group_by(BMI_Group)%>%
+summarise(
+"m" = mean(regressiondata3$PULSEPRESS),
+"stans" = sd(regressiondata3$PULSEPRESS),
+"range" = range(regressiondata3$PULSEPRESS),
+"min" = min(regressiondata3$PULSEPRESS),
+"max" = max(regressiondata3$PULSEPRESS)
+)
+```
+
+```{r include=FALSE}
+basedems<- regressiondata3%>%
+  summarise(
+    meanAge = mean(Age),
+    Age_SD = sd(meanAge),
+    Num_female = sum(SEX == "2"),
+    minage = min(Age),
+    maxage = max(Age)
+    )
+
+basedems
+
+sdage<- regressiondata3%>%
+  mutate(
+    meaAGE = mean(Age),
+    sdages = sd(Age)
+  )
+
+sdage
+```
+
+```{r}
+write.table(model2, file = "modeloutput.txt", sep = ",", quote = FALSE, row.names = F)
+```
+
+```{r}
+sum(regressiondata3$BMI_Group == "Obese")
+sum(regressiondata3$BMI_Group == "Healthy")
+sum(regressiondata3$BMI_Group == "Overweight")
+```
+
+```{r}
+ggplot(regressiondata3, aes(x = BrainAge, y = BMI, color = BMI_Group)) +
+  geom_point() +
+  labs(x = "Brain Age", y = "BMI Scores", color = "BMI Group") +
+  ggtitle("Scatter Plot of Brain Age vs BMI Scores") +
+  theme_minimal()
+```
+
+
+
+
+#make a graph with the distribuion of chonological age and brain age overlayed on each other 
+
+```{r model setup}
+library(car)
+newmodel<- lm(brainDelta~ SEX + PULSEPRESS + BMI_Group, data = regressiondata3)
+summary(newmodel)
+#plot it 
+```
+
+
+
+```{r}
+plot(newmodel)
+library(performance)
+check_model(newmodel)
+```
+
+```{r include=FALSE}
+#linearity
+plot(newmodel, which = 1)
+#independence
+par(mfrow = c(1,2))
+plot(resid(newmodel))
+plot(fitted(newmodel), resid(newmodel))
+#normality of errors 
+plot(newmodel, which = 2)
+#equal variances homoscedasticity 
+residualPlots(newmodel)
+plot(newmodel, which = 3)
+#multicolinearity - values over 5 moderate correlation and over 10 strong correlation 
+vif(newmodel)
+#no values issue here
+```
+
+```{r}
+mdl_diagnost <- 
+  tibble(
+  newmodel$model,
+  fitted = fitted(newmodel),
+  resid = residuals(newmodel),
+  studres = rstudent(newmodel),
+  hats = hatvalues(newmodel),
+  cooksd = cooks.distance(newmodel)
+)
+```
+
+
+
+
+```{r}
+mdl_diagnost %>% 
+  filter(abs(studres)>2)
+#31 ppt
+
+mdl_diagnost %>%
+  filter(hats > (2*0.011))
+#34 ppt
+
+mdl_diagnost %>%
+  filter(cooksd > 0.02) 
+
+#33 ppt having a high influence - upon investigation there us only one person who has a cooks d that is way higher than the rest. It is also the person who has a pulse outside of the normal range. despite being in the healthy group. perform sensitivty analysis without this person. 
+```
+
+
+```{r}
+car::influenceIndexPlot(newmodel, vars = "Cook",
+                        id=F, main = "Cook's distance")
+```
+
+#sensitivity analysis 
+```{r}
+# 3 people over 0.02 remove them check the assumptions
+reduceddata <- subset(regressiondata3, !(RID %in% c(4060, 5228, 6993)))
+```
+
+```{r}
+#sensitivity analysis with ppt 120 removed due to high influence 
+reducedmodel<- lm(brainDelta~ SEX + PULSEPRESS + BMI_Group, data = reduceddata)
+summary(reducedmodel) 
+```
+
+
+
+```{r}
+plot(reducedmodel)
+car::influenceIndexPlot(reducedmodel, vars = "Cook",
+                        id=F, main = "Cook's distance")
+```
+```{r}
+mdl_diagnost2 <- 
+  tibble(
+  reducedmodel$model,
+  fitted = fitted(reducedmodel),
+  resid = residuals(reducedmodel),
+  studres = rstudent(reducedmodel),
+  hats = hatvalues(reducedmodel),
+  cooksd = cooks.distance(reducedmodel)
+)
+
+mdl_diagnost2%>%
+  filter(cooksd > 0.015) 
+```
+
+```{r}
+
+# Gather summary statistics
+stats.table <- as.data.frame(summary(reducedmodel)$coefficients)
+# Get the confidence interval (CI) of the regression coefficient
+CI <- confint(reducedmodel)
+# Add a row to join the variables names and CI to the stats
+stats.table <- cbind(row.names(stats.table), stats.table, CI)
+# Rename the columns appropriately
+names(stats.table) <- c("Term", "B", "SE", "t", "p", "CI_lower", "CI_upper")
+
+stats.table
+```
+
+```{r}
+library(flextable)
+library(rempsyc)
+my_table <- nice_table(stats.table)
+```
+
+```{r}
+
+```
+
+
+```{r}
+intermodel<- lm(brainDelta~ BMI_Group*PULSEPRESS + SEX, data = reduceddata)
+summary(intermodel)
+#this is not good dont include this 
+```
+
+
+
+need to run power analysis and do demographics and tables for the results etc. 
+the intercept is the normal group. they have a brain age delta of 
+
+```{r}
+#calculating mean average error and pearsons correlation 
+mae<- corr.test(regressiondata3$Age, regressiondata3$BrainAge)
+mae
+
+```
+
+```{r}
+model2<- tab_model(reducedmodel)
+```
+
+```{r}
+tab_model(reducedmodel, transform = NULL, auto.label = FALSE, collapse.ci=TRUE, file = "results.xls")
+```
+
+```{r}
+library(psych)
+corr.test(regressiondata3$PULSE, regressiondata3$BPDIA)
+corr.test(regressiondata3$PULSE, regressiondata3$BPSYS)
+corr.test(regressiondata3$BPDIA, regressiondata3$BPSYS)
+```
+
+```{r}
+library(ggplot2)
+ggplot(regressiondata3, aes(x = Age, fill = "Age")) +
+  geom_density(alpha = 0.5) +
+  geom_density(aes(x = BrainAge, fill = "Brain Age"), alpha = 0.5) +
+  labs(x = "Chronological Age and Brain Age", y = "Distribution", ) +
+  scale_fill_manual(name = "Type of Age",
+                    values = c("Age" = "blue", "Brain Age" = "red"),
+                    labels = c("Chronological Age", "Brain Age")) +
+  theme( text = element_text(family = "Times New Roman", size = 12))
+```
+
+assumptions - run a levenes test 
+need to plot the data to interpret
+demographics of each group 
+
+
+
+reconfigure inclusion of blood pressure - BMI blood pressure linked and the role of hypertension included it as a covariate - greatest bp greater brain age include in the discussion. BP might impact brain age for reasons that are different to obesity - further research the mech is not clear here suggest some. 
+
+can include another model with obesity as 
+
+need to know - plot dist of blood pressure scores in each of the groups 
+
+
+we inckude the covariates becaue we havent age matched hten in the groups 
+
+
+model bmi as cont with brain delta as well just for myself
+
+tukey test to see between overweogh and obese
+
+#You can compute the mean absolute error (MAE) either with the mae function in R (from the Metrics package) or by computing the average of the absolute value of the brain age delta column. You also report the model’s performance using the correlation between predicted age and chronological age, which you can also get from the BrainAgeResults file.
+
+```{r}
+library(Metrics)
+maedata<- read.csv('~/Downloads/BrainAgeResults.csv')
+actual<- maedata$Age
+predicted<- maedata$BrainAge
+mae(actual, predicted)
+cor.test(maedata$Age, maedata$BrainAge)
+
+
+```
+
+```{r}
+library(emmeans)
+pairwise<- emmeans(reducedmodel, pairwise ~ BMI_Group)
+summary(pairwise)
+confint(pairwise)
+```
+
+
+```{r}
+filter(regressiondata3,Age<60)
+```
+
+```{r}
+newdataset<- subset(oldataset, ! = exclusion column names)
+```
+
+
+
+
+
